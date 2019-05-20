@@ -7,6 +7,7 @@ from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from connect.utils import attempt_json_loads
 from iotconnect.classes import AdHocAdapter
 from uninett_api.settings._secrets import HEADERS, OWNER_ID
 
@@ -17,7 +18,8 @@ class HiveManagerAdapter(AdHocAdapter):
     def validate_data(self, data, **kwargs):
         # TODO: Validate all data, possibly using serializers
         # Convert to JSON
-        data = json.loads(data)
+        data = attempt_json_loads(data)
+
         # Validation
         if data.get('deliver_by_email', None) is None:
             raise ValidationError("deliver_by_email is required")
@@ -33,8 +35,7 @@ class HiveManagerAdapter(AdHocAdapter):
     def perform_generation(self, validated_data):
         url = "https://cloud-ie.aerohive.com/xapi/v1/identity/credentials"
         params = {'ownerId': OWNER_ID}
-
-        session_key = json.loads(self.request.data['authentication_data'])['session_key']
+        session_key = attempt_json_loads(self.request.data['authentication_data'])['session_key']
         session = Session.objects.get(pk=session_key).get_decoded()
 
         kwargs = {
@@ -54,24 +55,25 @@ class HiveManagerAdapter(AdHocAdapter):
 
         return Response(data=data, status=status_code)
 
-    @staticmethod
-    def _get_response_data(response):
+    def _get_response_data(self, response):
         if response.status_code == status.HTTP_403_FORBIDDEN:
             data = {'error': 'Could not generate PSK because the user has already created one this second'}
             return data, response.status_code
         try:
-            data = json.loads(response.content)['data']['password']
+            psk = attempt_json_loads(response.content)['data']['password']
+            data = {'psk': psk, 'username': self.hive_user_name}
             status_code = status.HTTP_201_CREATED
         except TypeError:
             data = {'error': 'Could not generate PSK due to an unknown error with the multi-PSK service'}
             status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+
         return data, status_code
 
-    @staticmethod
-    def _get_generation_data(feide_username: str, group_id: int, full_name: str, organization_name: str, policy: str,
+    def _get_generation_data(self, feide_username: str, group_id: int, full_name: str, organization_name: str, policy: str,
                              device_type: str, deliver_by_email: bool, email: str):
         feide_username = feide_username.strip('feide:').split('@')[0]
         hive_user_name = f"{feide_username}: {datetime.datetime.now().replace(microsecond=0).strftime('%y%m%d%H%M%S')}"
+        self.hive_user_name = hive_user_name
 
         return {
             "deliverMethod": "NO_DELIVERY" if not deliver_by_email else "EMAIL",
